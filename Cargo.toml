@@ -1,0 +1,14 @@
+[package]
+name = "ofx-viewer"
+version = "0.1.0"
+authors = ["Zibo Chen <qw.54@163.com>"]
+edition = "2021"
+license = "Apache-2.0"
+description = "A simple OFX viewer built with Rust and Iced."
+
+
+[dependencies]
+iced = { version = "0.13", features = ["image"] }
+ofx-rs = { path = "../ofx-rs" }
+rfd = "0.15"
+rust_decimal = "1"

@@ -1,0 +1,348 @@
+name: Platform Installers
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "**[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override (e.g. 1.0.0)"
+        required: false
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          TAG=""
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="${VERSION}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG}"
+          else
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+            TAG="${VERSION}"
+          fi
+
+          VERSION="${VERSION#v}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+          echo "Tag: $TAG"
+
+  windows-installer:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zibo-chen/ofx-rs
+          path: ../ofx-rs
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install ImageMagick
+        shell: powershell
+        run: choco install imagemagick -y --no-progress
+
+      - name: Convert PNG icon to ICO
+        shell: powershell
+        run: |
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          magick res/logo.png -define icon:auto-resize=256,128,64,48,32,16 res/icon.ico
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build installer with Inno Setup
+        shell: powershell
+        run: |
+          $InnoSetup = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $InnoSetup)) {
+            $InnoSetup = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $InnoSetup)) {
+            Write-Error "Inno Setup not found!"
+            exit 1
+          }
+          & $InnoSetup /DAppVersion="${{ needs.prepare.outputs.version }}" installer\windows\ofx-viewer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: target/installer/ofx-viewer-*.exe
+
+  macos-dmg-x86_64:
+    needs: prepare
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zibo-chen/ofx-rs
+          path: ../ofx-rs
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build DMG
+        run: |
+          chmod +x installer/macos/build-macos.sh
+          installer/macos/build-macos.sh "${{ needs.prepare.outputs.version }}" x86_64
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-x86_64
+          path: target/installer/ofx-viewer-*.dmg
+
+  macos-dmg-aarch64:
+    needs: prepare
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zibo-chen/ofx-rs
+          path: ../ofx-rs
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build DMG
+        run: |
+          chmod +x installer/macos/build-macos.sh
+          installer/macos/build-macos.sh "${{ needs.prepare.outputs.version }}" aarch64
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-aarch64
+          path: target/installer/ofx-viewer-*.dmg
+
+  linux-deb-x86_64:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zibo-chen/ofx-rs
+          path: ../ofx-rs
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libfontconfig1-dev \
+            libfreetype6-dev dpkg-dev imagemagick
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build deb package
+        run: |
+          chmod +x installer/linux/build-deb.sh
+          installer/linux/build-deb.sh "${{ needs.prepare.outputs.version }}" x86_64
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-x86_64
+          path: target/installer/ofx-viewer_*.deb
+
+  linux-deb-aarch64:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zibo-chen/ofx-rs
+          path: ../ofx-rs
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            pkg-config dpkg-dev imagemagick
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb \[/deb [arch=amd64,/g; s/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev:arm64 libfontconfig1-dev:arm64 \
+            libfreetype6-dev:arm64
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Build deb package
+        run: |
+          chmod +x installer/linux/build-deb.sh
+          installer/linux/build-deb.sh "${{ needs.prepare.outputs.version }}" aarch64
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-aarch64
+          path: target/installer/ofx-viewer_*.deb
+
+  upload-release:
+    needs:
+      - prepare
+      - windows-installer
+      - macos-dmg-x86_64
+      - macos-dmg-aarch64
+      - linux-deb-x86_64
+      - linux-deb-aarch64
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: "{windows-installer,macos-dmg-*,linux-deb-*}"
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          TITLE="$TAG"
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists"
+          else
+            gh release create "$TAG" --title "$TITLE" --generate-notes
+          fi
+
+      - name: Upload installers to Release
+        shell: bash
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          for file in artifacts/*; do
+            [ -f "$file" ] || continue
+            gh release upload "$TAG" "$file" --clobber
+          done
+
+      - name: Update release body with installer table
+        shell: bash
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          DL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          EXISTING_BODY=$(gh release view "$TAG" --json body -q '.body' 2>/dev/null || echo "")
+          CLEAN_BODY=$(echo "$EXISTING_BODY" | sed '/<!-- DOWNLOAD_TABLE_START -->/,/<!-- DOWNLOAD_TABLE_END -->/d')
+
+          cat > /tmp/download_table.md << 'HEADER'
+          <!-- DOWNLOAD_TABLE_START -->
+
+          ---
+
+          ## Installer Downloads
+
+          | Platform | Arch | Download |
+          |:---:|:---:|:---:|
+          HEADER
+
+          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
+
+          for asset in $ASSETS; do
+            case "$asset" in
+              *-windows-*setup.exe)
+                echo "| Windows | x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *-macos-x86_64.dmg)
+                echo "| macOS | x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *-macos-aarch64.dmg)
+                echo "| macOS | aarch64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *_amd64.deb)
+                echo "| Linux | amd64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *_arm64.deb)
+                echo "| Linux | arm64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+            esac
+          done
+
+          echo "" >> /tmp/download_table.md
+          echo "<!-- DOWNLOAD_TABLE_END -->" >> /tmp/download_table.md
+
+          {
+            echo "$CLEAN_BODY"
+            echo ""
+            cat /tmp/download_table.md
+          } > /tmp/release_body.md
+
+          gh release edit "$TAG" --notes-file /tmp/release_body.md
